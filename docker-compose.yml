@@ -1,37 +1,73 @@
+
 version: '3.8'
 
 services:
-  backend:
-    build: ./backend
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=loraforge
+      - POSTGRES_PASSWORD=loraforge
+      - POSTGRES_DB=loraforge
     ports:
-      - "8000:8000"
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
+      - ./shared:/shared
+      - ./storage:/storage
+    ports:
+      - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/pinnacle_db
+      - DATABASE_URL=postgresql://loraforge:loraforge@db:5432/loraforge
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
+      - db
+      - redis
+
+  worker:
+    build: 
+      context: ./workers
+      dockerfile: Dockerfile
+    command: celery -A worker_main worker --loglevel=info
+    volumes:
+      - ./workers:/app
+      - ./shared:/shared
+      - ./storage:/storage
+    environment:
+      - DATABASE_URL=postgresql://loraforge:loraforge@db:5432/loraforge
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
       - db
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
     ports:
       - "3000:3000"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-
-  db:
-    image: pgvector/pgvector:pg16
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=pinnacle_db
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

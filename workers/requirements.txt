@@ -1,0 +1,8 @@
+
+celery==5.3.6
+redis==5.0.1
+torch
+transformers
+pillow
+opencv-python
+moviepy
