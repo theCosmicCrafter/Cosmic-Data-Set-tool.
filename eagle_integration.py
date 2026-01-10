@@ -75,6 +75,17 @@ class EagleClient:
             logger.error(f"Failed to update rating for {item_id}: {e}")
             return False
 
+    def update_item_annotation(self, item_id: str, annotation: str) -> bool:
+        """Update annotation (comment) for an item."""
+        payload = {"id": item_id, "annotation": annotation}
+        try:
+            resp = requests.post(f"{self.BASE_URL}/item/update", json=payload)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update annotation for {item_id}: {e}")
+            return False
+
 
 if __name__ == "__main__":
     client = EagleClient()

@@ -73,8 +73,12 @@ class EagleBridge:
                 tags.extend(analysis["subjects"])
             if "visual_style" in analysis:
                 tags.append(analysis["visual_style"])
+
             # Maybe add summary to comments? Eagle has a 'annotation' or 'comment' field?
-            # API doesn't document 'comment' update easily in simple endpoint, skipping for now.
+            if "summary" in analysis:
+                summary = analysis["summary"]
+                self.eagle.update_item_annotation(item_id, summary)
+                logger.info(f"Updated annotation for {name}")
 
         # Deduplicate tags
         tags = list(set(tags))
