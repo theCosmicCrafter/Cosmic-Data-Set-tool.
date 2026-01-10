@@ -114,6 +114,28 @@ Focus strictly on visual description, artistic style, lighting, and technical at
 Output must be valid JSON with keys: tags (array of strings), caption (string), aesthetic_score (number), is_gallery_standard (bool), critique (string), color_palette (hex array), camera_guess (string).
 `;
 
+const SYSTEM_PROMPT_SINGLE_PASS_XML = `
+You are an expert AI Dataset Curator.
+Analyze the image and output XML for image generation model training.
+Focus strictly on visual description, artistic style, lighting, and technical attributes.
+Output must be valid XML with the following structure:
+<analysis>
+  <tags>
+    <tag>tag1</tag>
+    <tag>tag2</tag>
+  </tags>
+  <caption>Detailed caption here</caption>
+  <aesthetic_score>number between 1 and 10</aesthetic_score>
+  <is_gallery_standard>true or false</is_gallery_standard>
+  <critique>Detailed critique here</critique>
+  <color_palette>
+    <hex>#RRGGBB</hex>
+    <hex>#RRGGBB</hex>
+  </color_palette>
+  <camera_guess>Camera model or settings guess</camera_guess>
+</analysis>
+`;
+
 // --- ORCHESTRATION HANDLERS ---
 
 const callOpenAICompatible = async (
@@ -159,6 +181,66 @@ const callOpenAICompatible = async (
         return data.choices[0].message.content;
     } catch (e) {
         console.error(`LLM Call Failed to ${baseUrl}`, e);
+        throw e;
+    }
+};
+
+const callAnthropic = async (
+    apiKey: string,
+    model: string,
+    base64Data: string,
+    systemPrompt: string,
+    userPrompt: string
+): Promise<string> => {
+    const headers = {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+    };
+
+    const body = {
+        model: model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [
+            {
+                role: "user",
+                content: [
+                    {
+                        type: "image",
+                        source: {
+                            type: "base64",
+                            media_type: "image/jpeg",
+                            data: base64Data
+                        }
+                    },
+                    {
+                        type: "text",
+                        text: userPrompt
+                    }
+                ]
+            }
+        ]
+    };
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const txt = await response.text();
+            throw new Error(`Anthropic API Error: ${txt}`);
+        }
+
+        const data = await response.json();
+        // Anthropic content is a list of blocks
+        const textBlock = data.content.find((c: any) => c.type === 'text');
+        return textBlock ? textBlock.text : '';
+    } catch (e) {
+        console.error("Anthropic Call Failed", e);
         throw e;
     }
 };
@@ -325,7 +407,112 @@ const analyzeWithOpenAISinglePass = async (
     }
 };
 
+const analyzeWithAnthropicSinglePass = async (
+    apiKey: string,
+    model: string,
+    base64Data: string,
+    sourceType: TagSource
+): Promise<UniversalAnalysisResult> => {
+    try {
+        const content = await callAnthropic(
+            apiKey,
+            model,
+            base64Data,
+            SYSTEM_PROMPT_SINGLE_PASS_XML,
+            "Analyze this image for aesthetic training tags."
+        );
+        return parseXmlResponse(content, sourceType);
+    } catch (e) {
+        console.error("Anthropic Single Pass Analysis Failed", e);
+        return {
+            tags: [{id:'err', name:'error_contacting_api', source: sourceType}],
+            caption: "Error contacting API.",
+            aesthetic: undefined
+        };
+    }
+};
+
 // --- PARSER ---
+
+const parseXmlResponse = (xmlStr: string, source: TagSource): UniversalAnalysisResult => {
+    // Helper to safely extract content
+    let extract = (tag: string, str: string) => "";
+    let extractList = (tag: string, str: string) => [] as string[];
+
+    // Check if DOMParser is available (Browser/Electron)
+    if (typeof DOMParser !== 'undefined') {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlStr, "text/xml");
+
+        extract = (tag: string) => doc.querySelector(tag)?.textContent || "";
+
+        const tags = Array.from(doc.querySelectorAll("tags tag")).map((node, i) => ({
+            id: `${source}-${Date.now()}-${i}`,
+            name: node.textContent || "",
+            source: source,
+            confidence: 0.95
+        }));
+
+        const colorPalette = Array.from(doc.querySelectorAll("color_palette hex")).map(node => node.textContent || "");
+
+        const aesthetic: AestheticData = {
+            score: parseFloat(extract("aesthetic_score")) || 5,
+            colorPalette: colorPalette,
+            isGalleryStandard: extract("is_gallery_standard").toLowerCase() === "true",
+            critique: extract("critique")
+        };
+
+        return {
+            tags,
+            caption: extract("caption"),
+            metadataGuess: { cameraModel: extract("camera_guess") },
+            aesthetic
+        };
+    } else {
+        // Fallback: Regex Parsing (Node/Testing Env)
+        extract = (tag: string, str: string) => {
+             const match = str.match(new RegExp(`<${tag}>(.*?)</${tag}>`, 's'));
+             return match ? match[1].trim() : "";
+        };
+
+        extractList = (tag: string, str: string) => {
+             const list: string[] = [];
+             const regex = new RegExp(`<${tag}>(.*?)</${tag}>`, 'gs');
+             let match;
+             while ((match = regex.exec(str)) !== null) {
+                 list.push(match[1].trim());
+             }
+             return list;
+        };
+
+        const tagSection = extract("tags", xmlStr);
+        const tagList = extractList("tag", tagSection);
+
+        const tags = tagList.map((t, i) => ({
+            id: `${source}-${Date.now()}-${i}`,
+            name: t,
+            source: source,
+            confidence: 0.95
+        }));
+
+        const colorSection = extract("color_palette", xmlStr);
+        const colorPalette = extractList("hex", colorSection);
+
+        const aesthetic: AestheticData = {
+            score: parseFloat(extract("aesthetic_score", xmlStr)) || 5,
+            colorPalette: colorPalette,
+            isGalleryStandard: extract("is_gallery_standard", xmlStr).toLowerCase() === "true",
+            critique: extract("critique", xmlStr)
+        };
+
+        return {
+            tags,
+            caption: extract("caption", xmlStr),
+            metadataGuess: { cameraModel: extract("camera_guess", xmlStr) },
+            aesthetic
+        };
+    }
+};
 
 const parseGenericResponse = (json: any, source: TagSource): UniversalAnalysisResult => {
     const tags = (json.tags || []).map((t: string, i: number) => ({
@@ -400,7 +587,12 @@ export const analyzeAssetUniversal = async (
             );
             
         case 'anthropic':
-             throw new Error("Anthropic Single Pass requires manual XML parsing impl.");
+            return analyzeWithAnthropicSinglePass(
+                settings.anthropicKey,
+                settings.anthropicModel,
+                base64Data,
+                TagSource.AI_ANTHROPIC
+            );
 
         default:
             throw new Error("Unknown AI Provider");
