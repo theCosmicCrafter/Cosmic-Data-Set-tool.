@@ -163,6 +163,47 @@ const callOpenAICompatible = async (
     }
 };
 
+const callAnthropic = async (
+    apiKey: string,
+    model: string,
+    messages: any[]
+): Promise<string> => {
+    const headers = {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerously-allow-browser-usage': 'true'
+    };
+
+    const body: any = {
+        model: model,
+        max_tokens: 4096,
+        messages: messages
+    };
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const txt = await response.text();
+            throw new Error(`Anthropic API Error: ${txt}`);
+        }
+
+        const data = await response.json();
+        if (data.content && data.content.length > 0 && data.content[0].type === 'text') {
+            return data.content[0].text;
+        }
+        return "";
+    } catch (e) {
+        console.error("Anthropic Call Failed", e);
+        throw e;
+    }
+};
+
 // --- AGENTIC WORKFLOW (The "Orchestrator") ---
 
 const runAgenticWorkflow = async (
@@ -233,7 +274,19 @@ const runAgenticWorkflow = async (
             } else if (settings.activeProvider === 'openrouter') {
                  description = await callOpenAICompatible('https://openrouter.ai/api/v1', settings.openrouterKey, settings.openrouterModel, [{role: 'user', content: userMsg}]);
             } else if (settings.activeProvider === 'anthropic') {
-                 throw new Error("Agentic Anthropic not fully implemented yet");
+                 description = await callAnthropic(
+                     settings.anthropicKey,
+                     settings.anthropicModel,
+                     [
+                         {
+                             role: 'user',
+                             content: [
+                                 { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Data } },
+                                 { type: "text", text: PROMPT_DESCRIBE_AESTHETIC }
+                             ]
+                         }
+                     ]
+                 );
             }
         } catch (e) {
             console.warn("Cloud Vision Failed", e);
@@ -258,6 +311,12 @@ const runAgenticWorkflow = async (
                  [{ role: "user", content: extractionPrompt }],
                  true // Force JSON mode
              );
+        } else if (settings.activeProvider === 'anthropic') {
+            rawJsonStr = await callAnthropic(
+                settings.anthropicKey,
+                settings.anthropicModel,
+                [{ role: "user", content: extractionPrompt }]
+            );
         } else {
             const providerUrl = settings.activeProvider === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1';
             const apiKey = settings.activeProvider === 'openai' ? settings.openaiKey : settings.openrouterKey;
@@ -361,8 +420,12 @@ export const analyzeAssetUniversal = async (
     const settings = getAiSettings();
 
     // 1. Agentic Workflow
-    if (settings.enableAgenticWorkflow && settings.activeProvider !== 'gemini' && settings.activeProvider !== 'anthropic') {
-        const source = settings.activeProvider === 'local' ? TagSource.AI_COMFY : TagSource.AI_OPENAI;
+    if (settings.enableAgenticWorkflow && settings.activeProvider !== 'gemini') {
+        let source = TagSource.AI_OPENAI;
+        if (settings.activeProvider === 'local') source = TagSource.AI_COMFY;
+        else if (settings.activeProvider === 'anthropic') source = TagSource.AI_ANTHROPIC;
+        else if (settings.activeProvider === 'openrouter') source = TagSource.AI_OPENROUTER;
+
         return runAgenticWorkflow(settings, base64Data, source);
     }
 
