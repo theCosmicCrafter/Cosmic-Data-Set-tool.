@@ -49,7 +49,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ asset, onBack, onSave, o
     // Trim State
     const [videoDuration, setVideoDuration] = useState(0);
     const [trimStart, setTrimStart] = useState(0);
-    const [trimEnd, setTrimEnd] = useState(10); // Default placeholder
+    const [trimEnd, setTrimEnd] = useState(0);
     
     const originalImageRef = useRef<HTMLImageElement | null>(null);
 
@@ -94,6 +94,19 @@ export const EditorView: React.FC<EditorViewProps> = ({ asset, onBack, onSave, o
             setVideoError(null);
         }
     };
+
+    // Ensure metadata is captured if already loaded (e.g. from cache)
+    useEffect(() => {
+        const video = videoRef.current;
+        if (isVideo && video && video.readyState >= 1) {
+            const dur = video.duration;
+            if (dur > 0) {
+                 setVideoDuration(dur);
+                 setTrimEnd(dur);
+                 setVideoError(null);
+            }
+        }
+    }, [isVideo, asset.url]);
 
     const handleVideoError = (e: any) => {
         console.error("Video Error:", e);
